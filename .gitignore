@@ -1,0 +1,25 @@
+# Ignore all
+*
+
+# Include relevant files at root
+!*.yaml
+!.gitignore
+!*.md
+
+# Ignore folders.
+.storage
+.cloud
+.google.token
+
+# Ensure these YAML files are ignored, otherwise your secret data/credentials will leak.
+ip_bans.yaml
+secrets.yaml
+known_devices.yaml
+
+# Include all relevant file types, anywhere under the packages folder
+!/packages/
+/packages/*
+!/packages/**/
+!/packages/**/*.yaml
+!/packages/**/.gitignore
+!/packages/**/*.md

@@ -1,0 +1,33 @@
+# Configure a default setup of Home Assistant (frontend, api, etc)
+default_config:
+
+homeassistant:
+  packages: !include_dir_merge_named packages/
+  customize: !include hidden/customize.yaml
+
+recorder:
+  db_url: !secret recorder_db_url
+
+logger:
+  default: warning
+
+system_log:
+  max_entries: 300
+
+http:
+  ssl_certificate: /ssl/fullchain.pem
+  ssl_key: /ssl/privkey.pem
+  use_x_forwarded_for: true
+  trusted_proxies: !secret http_trusted_proxies
+
+  # I am in the process of cleaning up these config files before sharing them (probably as packages?)
+group: !include hidden/groups.yaml
+automation: !include hidden/automations.yaml
+script: !include hidden/scripts.yaml
+scene: !include hidden/scenes.yaml
+sensor: !include hidden/sensors.yaml
+binary_sensor: !include hidden/binary_sensors.yaml
+input_select: !include hidden/input_selects.yaml
+
+tts:
+  - platform: google_translate
