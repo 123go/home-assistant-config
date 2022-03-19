@@ -1,144 +1,64 @@
+# This package requires the following entries in the secrets.yaml file...
+#   sa_site_id: XXXXXX    (Site ID can be found here: https://my.solaranalytics.com/au/my-site/)
+#   sa_username: email@address.com
+#   sa_password: ************
+
 solar_analytics:
-  sensor:
-    - platform: rest
-      name: sa_site
-      resource: https://portal.solaranalytics.com.au/api/v3/site_list?hardware=true&capacity=true&subscription=true
+  input_text:
+    sa_site_id:
+      initial: !secret sa_site_id
+
+  rest:
+    - authentication: basic
       username: !secret sa_username
       password: !secret sa_password
-      authentication: basic
-      value_template: "{{ now() }}"
-      # Note: assumes only a single device per account, there could be a second device (e.g. replaced device due to fault/upgrade) at $.data.[1]
-      json_attributes_path: "$.data.[0]"
-      json_attributes:
-        - "e_status"
-        - "fault_class"
-        - "fault_id"
-        - "has_pv"
-        - "mer_status"
-        - "overall_status"
-        - "retailer_user"
-        - "s_cli_site_name"
-        - "site_id"
-        - "site_inactive"
-        - "capacity"
-        - "devices"
-        - "sub_type"
-      scan_interval: 62400
+      scan_interval: 60
+      resource_template: "https://portal.solaranalytics.com.au/api/v2/site_data/{{ states('input_text.sa_site_id') }}?raw=true&tstart={{ now().strftime('%Y%m%d') }}&tend={{ (now() + timedelta(days=1)).strftime('%Y%m%d') }}&trunc=false"
+      # My SA device has two circuits represented in the raw data
+      sensor:
+        # The first circuit is for the grid connection (giving import and export readings)
+        - name: "sa_site_data_raw_grid"
+          value_template: "Latest record: {{ as_datetime(value_json['data'][0].data[0].time ).replace(tzinfo=now().tzinfo) }}"
+          json_attributes_path: "$.data[0]"
+          json_attributes: "data"
 
-    - platform: rest
-      name: sa_site_data
-      resource_template: "https://portal.solaranalytics.com.au/api/v2/site_data/{{ state_attr('sensor.sa_site', 'site_id') }}?gran=minute&tstart={{ now().strftime('%Y%m%d') }}&tend={{ now().strftime('%Y%m%d') }}&trunc=false"
-      username: !secret sa_username
-      password: !secret sa_password
-      authentication: basic
-      value_template: >
-        {% set most_recent_sensor_data = value_json['data'] | rejectattr('energy_consumed', 'equalto', None) | list | last %}
-        {{ most_recent_sensor_data.t_stamp }}
-      json_attributes: "data"
-      scan_interval: 300 # Data with granularity "minute" only seems to be available in 5 minute blocks (for now?)
-      force_update: true
+        # The second circuit is for the solar panel connection (giving generation readings)
+        - name: "sa_site_data_raw_solar"
+          value_template: "Latest record: {{ as_datetime(value_json['data'][1].data[0].time ).replace(tzinfo=now().tzinfo) }}"
+          json_attributes_path: "$.data[1]"
+          json_attributes: "data"
 
-    - platform: template
-      sensors:
-        ############################################################################################
-        # Calculation Sensors
-        ############################################################################################
-
-        # The following sensors are not intended to be used directly in Home Assistant.
-        # The purpose of these sensors is to consolidate all the calculation logic in one place.
-        # Subsequent sensors can then take these values and flesh them out for use with Energy
-        # Management, etc.
-        # In most cases, the calculated values are stored in a dictionary object in the "data"
-        # attribute of each sensor. The reason for this is that it is not (currently?) possible to
-        # assign the dictionary object directly to "attribute_templates"... each attribute must be
-        # explicity named. We get around this by assigning the dictionary to the generically named
-        # "data" attribute. The values can be accessed via states.<sensor>.attributes.data.<value>
-
-        # This sensor calculates cumulative totals from the list of energy readings provided by the
-        # REST sensor.
-        sa_site_data_totals:
-          unique_id: "sa_site_data_totals"
-          friendly_name: Daily Energy Totals
-          value_template: "OK"
-          attribute_templates:
-            data: >
-              {% set totals = namespace(consumed = 0, generated = 0, imported = 0, exported = 0) %}
-              {% for sensor_data in state_attr('sensor.sa_site_data', 'data') | rejectattr('energy_consumed', 'equalto', None) %}
-              {%   set totals.consumed  = totals.consumed  + sensor_data.energy_consumed %}
-              {%   set totals.generated = totals.generated + sensor_data.energy_generated %}
-              {%   if sensor_data.energy_generated > sensor_data.energy_consumed %}
-              {%     set totals.exported = totals.exported + sensor_data.energy_generated - sensor_data.energy_consumed %}
-              {%   else %}
-              {%     set totals.imported = totals.imported + sensor_data.energy_consumed - sensor_data.energy_generated %}
-              {%   endif %}
-              {% endfor %}
-              {{ { 'consumed': totals.consumed, 'generated': totals.generated, 'imported': totals.imported, 'exported': totals.exported } }}
-
-        # This sensor finds the latest (most recent) item from the list of energy readings provided
-        # by the REST sensor
-        sa_site_data_latest:
-          unique_id: "sa_site_data_latest"
-          friendly_name: Latest Site Data Reading
-          value_template: "OK"
-          attribute_templates:
-            data: >-
-              {% if state_attr('sensor.sa_site_data', 'data') is not none %}
-              {%   set latest = state_attr('sensor.sa_site_data', 'data') | rejectattr('energy_consumed', 'equalto', None) | list | last %}
-              {{ { 'consumed': latest.energy_consumed, 
-                   'generated': latest.energy_generated, 
-                   'power': ( latest.energy_generated - latest.energy_consumed ) * 12 } }}
-              {% else %}
-              {{ { 'consumed': 0, 'generated': 0, 'power': 0 } }}
-              {% endif %}
-
-        ############################################################################################
-        # Usable Sensors
-        ############################################################################################
-
-        # The following sensors use the values calculated in the "sa_site_data_totals" sensor
-        sa_energy_total_consumed:
-          unique_id: "sa_energy_total_consumed"
-          friendly_name: Total Energy Consumed
+  template:
+    - sensor:
+        - name: "Energy Generated - Daily Total"
+          unique_id: "sa_energy_generated_daily_total"
           unit_of_measurement: "Wh"
-          value_template: "{{ state_attr('sensor.sa_site_data_totals', 'data').consumed }}"
-          icon_template: mdi:transmission-tower-export
+          state: >
+            {%- if state_attr('sensor.sa_site_data_raw_solar', 'data') is iterable %}
+            {{ state_attr('sensor.sa_site_data_raw_solar', 'data') | sum(attribute='energyPos') }}
+            {% endif %}
+          state_class: total_increasing
           device_class: "energy"
-          attribute_templates:
-            state_class: total_increasing
-        sa_energy_total_generated:
-          unique_id: "sa_energy_total_generated"
-          friendly_name: Total Energy Generated
-          unit_of_measurement: "Wh"
-          value_template: "{{ state_attr('sensor.sa_site_data_totals', 'data').generated }}"
-          icon_template: mdi:transmission-tower-import
-          device_class: "energy"
-          attribute_templates:
-            state_class: total_increasing
-        sa_energy_total_imported:
-          unique_id: "sa_energy_total_imported"
-          friendly_name: Total Energy Imported From Grid
-          unit_of_measurement: "Wh"
-          value_template: "{{ state_attr('sensor.sa_site_data_totals', 'data').imported }}"
-          icon_template: mdi:transmission-tower-export
-          device_class: "energy"
-          attribute_templates:
-            state_class: total_increasing
-        sa_energy_total_exported:
-          unique_id: "sa_energy_total_exported"
-          friendly_name: Total Energy Exported To Grid
-          unit_of_measurement: "Wh"
-          value_template: "{{ state_attr('sensor.sa_site_data_totals', 'data').exported }}"
-          icon_template: mdi:transmission-tower-import
-          device_class: "energy"
-          attribute_templates:
-            state_class: total_increasing
+          icon: mdi:transmission-tower-import
 
-        # The following sensors use the values calculated in the "sa_site_data_latest" sensor
-        sa_power:
-          friendly_name: Power
-          unit_of_measurement: "W"
-          value_template: "{{ state_attr('sensor.sa_site_data_latest', 'data').power }}"
-          icon_template: mdi:solar-power
-          device_class: "power"
-          attribute_templates:
-            state_class: measurement
+        - name: "Energy Imported - Daily Total"
+          unique_id: "sa_energy_imported_daily_total"
+          unit_of_measurement: "Wh"
+          state: >
+            {%- if state_attr('sensor.sa_site_data_raw_grid', 'data') is iterable %}
+            {{ state_attr('sensor.sa_site_data_raw_grid', 'data') | sum(attribute='energyPos') }}
+            {% endif %}
+          state_class: total_increasing
+          device_class: "energy"
+          icon: mdi:transmission-tower-export
+
+        - name: "Energy Exported - Daily Total"
+          unique_id: "sa_energy_exported_daily_total"
+          unit_of_measurement: "Wh"
+          state: >
+            {%- if state_attr('sensor.sa_site_data_raw_grid', 'data') is iterable %}
+            {{ state_attr('sensor.sa_site_data_raw_grid', 'data') | sum(attribute='energyNeg') }}
+            {% endif %}
+          state_class: total_increasing
+          device_class: "energy"
+          icon: mdi:transmission-tower-import
